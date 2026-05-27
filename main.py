@@ -1,7 +1,9 @@
 # ============================================================
 # MAIN.PY - Trenes España
-# Busca en Ouigo Y Renfe, compara, y manda el más barato.
-# Salida viernes >= 15:00, vuelta domingo >= 17:00.
+# Busca en Ouigo Y Renfe; alerta de cada uno por separado.
+# - Ouigo: filtra por hora real (alerta por umbral o mínimo histórico).
+# - Renfe: API actual solo da precio mínimo del día sin hora,
+#   por eso solo alerta cuando rompe el mínimo histórico.
 # ============================================================
 
 import yaml
@@ -112,10 +114,8 @@ def procesar_ruta(config_ruta, fechas, config_global):
         print(f"    {r['fecha_ida']} → {r['fecha_vuelta']} | "
               f"{r['precio_total']:.0f} EUR | {r['operador']} {bajo}")
 
-    # ── Guardar en DB y detectar el mejor ───────────────────
-    mejor        = None
-    mejor_precio = float("inf")
-    mejor_es_min = False
+    # ── Guardar todo en DB y elegir el mejor de cada operador ────
+    mejor_por_operador = {}   # operador -> (r, es_minimo)
 
     for r in todos_resultados:
         guardar_precio(
@@ -128,52 +128,52 @@ def procesar_ruta(config_ruta, fechas, config_global):
             hora_vuelta  = r.get("hora_vuelta", ""),
         )
 
-        if r["precio_total"] < mejor_precio:
-            mejor_precio = r["precio_total"]
-            mejor        = r
-
+        actual = mejor_por_operador.get(r["operador"])
+        if actual is None or r["precio_total"] < actual[0]["precio_total"]:
             minimo_hist = obtener_minimo_historico(
                 operador     = r["operador"],
                 ruta         = codigo_ruta,
                 fecha_ida    = r["fecha_ida"],
                 fecha_vuelta = r["fecha_vuelta"],
             )
+            es_min = minimo_hist is None or r["precio_total"] < minimo_hist
+            mejor_por_operador[r["operador"]] = (r, es_min)
 
-            if minimo_hist is None or r["precio_total"] < minimo_hist:
-                mejor_es_min = True
-            else:
-                mejor_es_min = False
+    # ── Decidir alerta por operador ──────────────────────────
+    # Ouigo: filtra por hora real → alerta por umbral O mínimo histórico.
+    # Renfe: precio mínimo del día sin hora → solo alerta por mínimo histórico.
+    for operador, (mejor, es_min) in mejor_por_operador.items():
+        if operador == "Ouigo":
+            debe_alertar = (mejor["precio_total"] < umbral) or es_min
+        else:  # Renfe (sin garantía de hora)
+            debe_alertar = es_min
 
-    if mejor is None:
-        return
+        if not debe_alertar:
+            print(f"\n  {operador}: {mejor['precio_total']:.0f} EUR "
+                  f"— sin alerta (umbral {umbral} EUR)")
+            continue
 
-    debe_alertar = (mejor_precio < umbral) or mejor_es_min
-
-    if debe_alertar:
-        print(f"\n  *** ALERTA: {mejor_precio:.0f} EUR | {mejor['operador']}")
-        if mejor_es_min:
+        print(f"\n  *** ALERTA {operador}: {mejor['precio_total']:.0f} EUR")
+        if es_min:
             print(f"  *** Nuevo mínimo histórico")
         print(f"  Enviando Telegram...")
 
         exito = enviar_alerta_tren(
-            ruta               = nombre,
-            fecha_ida          = mejor["fecha_ida"],
-            fecha_vuelta       = mejor["fecha_vuelta"],
-            precio_total       = mejor_precio,
-            operador           = mejor["operador"],
-            hora_ida           = mejor.get("hora_ida", ""),
-            hora_vuelta        = mejor.get("hora_vuelta", ""),
-            buscador           = NOMBRE_BUSCADOR,
-            es_minimo_historico = mejor_es_min,
+            ruta                = nombre,
+            fecha_ida           = mejor["fecha_ida"],
+            fecha_vuelta        = mejor["fecha_vuelta"],
+            precio_total        = mejor["precio_total"],
+            operador            = operador,
+            hora_ida            = mejor.get("hora_ida", ""),
+            hora_vuelta         = mejor.get("hora_vuelta", ""),
+            buscador            = NOMBRE_BUSCADOR,
+            es_minimo_historico = es_min,
         )
 
         if exito:
             print(f"  ✓ Telegram enviado")
         else:
             print(f"  ✗ Error al enviar Telegram")
-    else:
-        print(f"\n  Mejor precio: {mejor_precio:.0f} EUR ({mejor['operador']}) "
-              f"— sobre el umbral ({umbral} EUR)")
 
 
 if __name__ == "__main__":

@@ -1,13 +1,13 @@
 # ============================================================
 # CONFIG.YAML - Trenes España
-# Busca en Ouigo Y Renfe. Manda el más barato por ruta.
-# Salida viernes >= 15:00, vuelta domingo >= 17:00.
+# Busca en Ouigo Y Renfe. Cada operador alerta por separado.
+# Salida viernes >= 14:30, vuelta domingo >= 16:00.
 # umbral_precio: EUR por persona (ida + vuelta combinado).
 # ============================================================
 
 semanas_adelante: 14
-hora_minima_ida: "15:00"
-hora_minima_vuelta: "17:00"
+hora_minima_ida: "14:30"
+hora_minima_vuelta: "16:00"
 
 # Períodos en los que no estás en Madrid (se omiten esas fechas de ida)
 ausencias:
