@@ -31,6 +31,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          IRYO_CFG_TOKEN: ${{ secrets.IRYO_CFG_TOKEN }}
           PYTHONIOENCODING: utf-8
         run: python main.py
 

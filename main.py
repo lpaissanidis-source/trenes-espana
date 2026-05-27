@@ -1,7 +1,7 @@
 # ============================================================
 # MAIN.PY - Trenes España
-# Busca en Ouigo Y Renfe; alerta de cada uno por separado.
-# - Ouigo: filtra por hora real (alerta por umbral o mínimo histórico).
+# Busca en Ouigo, Renfe e Iryo; alerta de cada uno por separado.
+# - Ouigo e Iryo: filtran por hora real (alerta por umbral o mínimo histórico).
 # - Renfe: API actual solo da precio mínimo del día sin hora,
 #   por eso solo alerta cuando rompe el mínimo histórico.
 # ============================================================
@@ -13,6 +13,7 @@ import time
 from database       import crear_tabla, guardar_precio, obtener_minimo_historico
 from buscador_ouigo import buscar as buscar_ouigo, ruta_disponible as ouigo_disponible
 from buscador_renfe import buscar_todos as buscar_renfe, ruta_disponible as renfe_disponible
+from buscador_iryo  import buscar as buscar_iryo,  ruta_disponible as iryo_disponible
 from telegram_bot   import enviar_alerta_tren
 
 NOMBRE_BUSCADOR = "Trenes España"
@@ -103,6 +104,26 @@ def procesar_ruta(config_ruta, fechas, config_global):
     else:
         print(f"  [Renfe] No cubre esta ruta.")
 
+    # ── Iryo ────────────────────────────────────────────────
+    if iryo_disponible(destino):
+        print(f"  [Iryo] Buscando {len(fechas)} fines de semana...")
+        for fecha_ida, fecha_vuelta in fechas:
+            r = buscar_iryo(
+                origen=origen,
+                destino=destino,
+                fecha_ida=fecha_ida,
+                fecha_vuelta=fecha_vuelta,
+                hora_minima_ida=hora_min_ida,
+                hora_minima_vuelta=hora_min_vuelta,
+            )
+            if r:
+                r["fecha_ida"]    = fecha_ida
+                r["fecha_vuelta"] = fecha_vuelta
+                todos_resultados.append(r)
+            time.sleep(1.0)  # pausa entre llamadas
+    else:
+        print(f"  [Iryo] No cubre esta ruta.")
+
     if not todos_resultados:
         print(f"  Sin resultados disponibles.")
         return
@@ -140,10 +161,10 @@ def procesar_ruta(config_ruta, fechas, config_global):
             mejor_por_operador[r["operador"]] = (r, es_min)
 
     # ── Decidir alerta por operador ──────────────────────────
-    # Ouigo: filtra por hora real → alerta por umbral O mínimo histórico.
+    # Ouigo e Iryo: filtran por hora real → alerta por umbral O mínimo histórico.
     # Renfe: precio mínimo del día sin hora → solo alerta por mínimo histórico.
     for operador, (mejor, es_min) in mejor_por_operador.items():
-        if operador == "Ouigo":
+        if operador in ("Ouigo", "Iryo"):
             debe_alertar = (mejor["precio_total"] < umbral) or es_min
         else:  # Renfe (sin garantía de hora)
             debe_alertar = es_min
