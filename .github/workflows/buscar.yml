@@ -24,6 +24,9 @@ jobs:
       - name: Instalar dependencias
         run: pip install -r requirements.txt
 
+      - name: Instalar Chromium para Playwright
+        run: python -m playwright install --with-deps chromium
+
       - name: Parchear libreria ouigo
         run: python patch_ouigo.py
 

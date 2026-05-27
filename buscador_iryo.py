@@ -1,34 +1,33 @@
 """
-Buscador Iryo usando la API api.iryo.eu/b2c/availability/search.
+Buscador Iryo usando Playwright + Chromium headless.
 
-Notas operativas:
-- Usa curl_cffi con impersonate=chrome120 para imitar el fingerprint TLS de
-  un navegador real y esquivar el WAF de Cloudflare que protege api.iryo.eu.
-- El cfgToken está firmado con HMAC-SHA256 por Iryo (no podemos generarlo).
-  Caduca cada ~24h. Si Iryo deja de devolver resultados:
-    1) Abrí iryo.eu en Chrome, DevTools > Network, hacé una búsqueda.
-    2) En el request 'search' copiá el valor de cfgToken del Payload.
-    3) Pegalo en CFG_TOKEN_DEFAULT abajo o en el GitHub Secret IRYO_CFG_TOKEN.
-- Si Cloudflare sigue bloqueando con 403 pese a curl_cffi, capturar la cookie
-  cf_clearance del browser y setearla como secret IRYO_COOKIES con formato
-  "cf_clearance=xxx; __cf_bm=yyy".
-- Tras el primer 403/401 se asume sesión inválida y se skipean las llamadas
-  restantes (evita ruido en los logs y latencia inútil).
+Estrategia:
+1. Al primer uso se lanza Chromium en modo headless con fingerprint de Chrome real.
+2. Navega a iryo.eu/es/home, lo que dispara el challenge JS de Cloudflare y
+   deja la cookie cf_clearance setada en el contexto del browser.
+3. Las llamadas a api.iryo.eu se hacen vía page.evaluate(fetch(...)), o sea
+   desde adentro del browser, así el TLS fingerprint y las cookies que ve
+   Cloudflare son las del Chromium real.
+4. Tras un 401/403 se desactiva Iryo para el resto de la corrida.
+
+cfgToken: firmado con HMAC-SHA256 por Iryo, expira ~24h. Si Iryo deja de
+funcionar, capturalo de iryo.eu (DevTools > Network > 'search' > Payload)
+y pegalo en CFG_TOKEN_DEFAULT o en el secret IRYO_CFG_TOKEN.
 """
 
+import atexit
 import os
 import uuid
 from datetime import datetime, time
-import time as time_module
 
 try:
-    from curl_cffi import requests as http
-    _IMPERSONATE = "chrome120"
+    from playwright.sync_api import sync_playwright
+    _PW_AVAILABLE = True
 except ImportError:
-    import requests as http
-    _IMPERSONATE = None
+    _PW_AVAILABLE = False
 
-API_URL = "https://api.iryo.eu/b2c/availability/search"
+API_URL          = "https://api.iryo.eu/b2c/availability/search"
+HOME_URL         = "https://iryo.eu/es/home"
 SUBSCRIPTION_KEY = "7c9b9b1ea0fe4f0c9d1739fcbf8b5438"
 
 CFG_TOKEN_DEFAULT = (
@@ -40,11 +39,8 @@ CFG_TOKEN_DEFAULT = (
     "PNMi5ipjQhGMNSFoGD4BYuPt+SwCAAA="
     ".fRcDmoQXxwqrDt1G0VIgHWKJ5VEGFnVA+MJWYT7HhVE="
 )
-CFG_TOKEN   = os.environ.get("IRYO_CFG_TOKEN")  or CFG_TOKEN_DEFAULT
-COOKIES_RAW = os.environ.get("IRYO_COOKIES", "")
+CFG_TOKEN = os.environ.get("IRYO_CFG_TOKEN") or CFG_TOKEN_DEFAULT
 
-# Códigos UIC que usa Iryo. Madrid X0000 es virtual ("todas las estaciones",
-# agrupa Atocha 60000 + Chamartín 17000).
 ESTACIONES = {
     "Madrid":      "X0000",
     "Barcelona":   "71801",   # Sants
@@ -57,66 +53,126 @@ ESTACIONES = {
 }
 DESTINOS_IRYO = set(ESTACIONES.keys()) - {"Madrid"}
 
-# Flag de sesión: tras un 401/403 dejamos de llamar a Iryo el resto de la corrida.
-_session_dead = False
+# Globals del browser (lazy-init).
+_pw            = None
+_browser       = None
+_context       = None
+_page          = None
+_session_dead  = False
+_session_inited = False
+
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
 
 
 def sesion_activa():
-    return not _session_dead
+    return _PW_AVAILABLE and not _session_dead
 
 
 def ruta_disponible(destino):
     return destino in DESTINOS_IRYO
 
 
-def _parse_cookies(raw):
-    if not raw:
-        return None
-    out = {}
-    for piece in raw.split(";"):
-        piece = piece.strip()
-        if "=" in piece:
-            k, v = piece.split("=", 1)
-            out[k.strip()] = v.strip()
-    return out or None
+def _cleanup():
+    global _pw, _browser, _context, _page
+    for closer, obj in (("close", _page), ("close", _context),
+                        ("close", _browser), ("stop", _pw)):
+        try:
+            if obj:
+                getattr(obj, closer)()
+        except Exception:
+            pass
+    _pw = _browser = _context = _page = None
 
 
-def _headers():
-    return {
-        "accept": "application/json, text/plain, */*",
-        "accept-language": "es-ES",
-        "content-type": "application/json;charset=UTF-8",
-        "no-authorization": "",
-        "ocp-apim-subscription-key": SUBSCRIPTION_KEY,
-        "origin": "https://iryo.eu",
-        "referer": "https://iryo.eu/",
-        "request-channel": "WEB",
-        "user-agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "x-client-version": "1.104.2",
-        "x-pwa-sessid": str(uuid.uuid4()),
-        "x-request-id": str(uuid.uuid4()),
-    }
+def _init():
+    """Lanza Chromium, abre iryo.eu y deja la sesión lista para llamar al API."""
+    global _pw, _browser, _context, _page, _session_inited, _session_dead
+
+    if _session_inited:
+        return
+    _session_inited = True
+
+    if not _PW_AVAILABLE:
+        print("  [Iryo] Playwright no instalado. Skipeando Iryo.")
+        _session_dead = True
+        return
+
+    try:
+        _pw = sync_playwright().start()
+        _browser = _pw.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        _context = _browser.new_context(
+            user_agent=USER_AGENT,
+            locale="es-ES",
+            viewport={"width": 1920, "height": 1080},
+        )
+        _page = _context.new_page()
+        _page.goto(HOME_URL, wait_until="domcontentloaded", timeout=45000)
+        # Esperar a que se ejecute el challenge JS de Cloudflare si hay.
+        _page.wait_for_timeout(4000)
+        print("  [Iryo] Browser inicializado (cookie cf_clearance lista).")
+        atexit.register(_cleanup)
+    except Exception as e:
+        print(f"  [Iryo] Error al inicializar browser: {e}. Skipeando Iryo.")
+        _session_dead = True
+        _cleanup()
 
 
 def _post(payload):
-    kwargs = {
-        "json":    payload,
-        "headers": _headers(),
-        "timeout": 20,
-        "cookies": _parse_cookies(COOKIES_RAW),
+    """POST al API desde adentro del browser; usa el TLS y cookies de Chromium."""
+    if not sesion_activa():
+        return None
+    _init()
+    if _session_dead:
+        return None
+
+    headers = {
+        "accept":                       "application/json, text/plain, */*",
+        "accept-language":              "es-ES",
+        "content-type":                 "application/json;charset=UTF-8",
+        "no-authorization":             "",
+        "ocp-apim-subscription-key":    SUBSCRIPTION_KEY,
+        "request-channel":              "WEB",
+        "x-client-version":             "1.104.2",
+        "x-pwa-sessid":                 str(uuid.uuid4()),
+        "x-request-id":                 str(uuid.uuid4()),
     }
-    if _IMPERSONATE:
-        kwargs["impersonate"] = _IMPERSONATE
-    return http.post(API_URL, **kwargs)
+    # Origin y Referer los pone el browser solo.
+
+    try:
+        result = _page.evaluate(
+            """async (args) => {
+                try {
+                    const resp = await fetch(args.url, {
+                        method:      'POST',
+                        headers:     args.headers,
+                        body:        JSON.stringify(args.payload),
+                        credentials: 'include',
+                    });
+                    let body;
+                    try { body = await resp.json(); }
+                    catch (_) { body = await resp.text(); }
+                    return { status: resp.status, body };
+                } catch (e) {
+                    return { status: -1, body: String(e) };
+                }
+            }""",
+            {"url": API_URL, "headers": headers, "payload": payload},
+        )
+        return result
+    except Exception as e:
+        return {"status": -1, "body": f"playwright error: {e}"}
 
 
 def _llamar_api(orig_code, dest_code, fecha_ida, fecha_vuelta):
     global _session_dead
-    if _session_dead:
+    if not sesion_activa():
         return None
 
     payload = {
@@ -130,24 +186,24 @@ def _llamar_api(orig_code, dest_code, fecha_ida, fecha_vuelta):
              "direction": "inbound",  "departure": fecha_vuelta},
         ],
     }
-    for intento in range(3):
-        try:
-            resp = _post(payload)
-            sc = resp.status_code
-            if sc == 200:
-                return resp.json()
-            if sc in (401, 403):
-                _session_dead = True
-                print(f"  [Iryo] Bloqueado ({sc}) — Cloudflare WAF o cfgToken "
-                      f"expirado. Skipeando Iryo el resto de la corrida. Si "
-                      f"persiste: capturar cookie cf_clearance del browser y "
-                      f"setear secret IRYO_COOKIES.")
-                return None
-            print(f"  [Iryo] API {sc} intento {intento+1}: {resp.text[:200]}")
-            time_module.sleep(2)
-        except Exception as e:
-            print(f"  [Iryo] Error red intento {intento+1}: {e}")
-            time_module.sleep(2)
+
+    for intento in range(2):
+        result = _post(payload)
+        if result is None:
+            return None
+        sc = result.get("status")
+        body = result.get("body")
+        if sc == 200:
+            if isinstance(body, dict):
+                return body
+            return None
+        if sc in (401, 403):
+            _session_dead = True
+            print(f"  [Iryo] Bloqueado ({sc}) — Cloudflare WAF tras el browser, "
+                  f"o cfgToken expirado. Skipeando Iryo el resto de la corrida.")
+            return None
+        snippet = str(body)[:200] if body else ""
+        print(f"  [Iryo] Status {sc} intento {intento+1}: {snippet}")
     return None
 
 
@@ -232,7 +288,7 @@ def buscar(origen, destino, fecha_ida, fecha_vuelta,
     Busca ida+vuelta en Iryo respetando filtros de hora.
     Devuelve dict con la misma estructura que buscador_ouigo.buscar, o None.
     """
-    if _session_dead:
+    if not sesion_activa():
         return None
     if not ruta_disponible(destino):
         return None
