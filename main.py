@@ -205,7 +205,8 @@ if __name__ == "__main__":
         exit(1)
 
     if ausencias:
-        print(f"Períodos excluidos: {[f\"{a['inicio']} → {a['fin']}\" for a in ausencias]}")
+        rangos = [a["inicio"] + " -> " + a["fin"] for a in ausencias]
+        print(f"Períodos excluidos: {rangos}")
 
     print(f"Rutas: {len(rutas)} | Fines de semana disponibles: {len(fechas)} "
           f"(del {fechas[0][0]} al {fechas[-1][0]})")
