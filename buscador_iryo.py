@@ -113,11 +113,27 @@ def _init():
             viewport={"width": 1920, "height": 1080},
         )
         _page = _context.new_page()
-        _page.goto(HOME_URL, wait_until="domcontentloaded", timeout=45000)
-        # Esperar a que se ejecute el challenge JS de Cloudflare si hay.
-        _page.wait_for_timeout(4000)
-        print("  [Iryo] Browser inicializado (cookie cf_clearance lista).")
+        # networkidle = espera a que la SPA termine de bootstrap y haga sus
+        # propios calls (puede setear cookies de api.iryo.eu).
+        _page.goto(HOME_URL, wait_until="networkidle", timeout=60000)
+        _page.wait_for_timeout(2000)
         atexit.register(_cleanup)
+
+        # Diagnóstico: probamos un fetch simple a api.iryo.eu para distinguir
+        # entre "Cloudflare bloquea la IP" y "CORS bloquea la request".
+        diag = _page.evaluate(
+            """async () => {
+                try {
+                    const r = await fetch('https://api.iryo.eu/', {
+                        method: 'GET', credentials: 'include',
+                    });
+                    return { status: r.status, ok: r.ok };
+                } catch (e) {
+                    return { error: String(e) };
+                }
+            }"""
+        )
+        print(f"  [Iryo] Browser inicializado. Diag api.iryo.eu: {diag}")
     except Exception as e:
         print(f"  [Iryo] Error al inicializar browser: {e}. Skipeando Iryo.")
         _session_dead = True
@@ -187,23 +203,19 @@ def _llamar_api(orig_code, dest_code, fecha_ida, fecha_vuelta):
         ],
     }
 
-    for intento in range(2):
-        result = _post(payload)
-        if result is None:
-            return None
-        sc = result.get("status")
-        body = result.get("body")
-        if sc == 200:
-            if isinstance(body, dict):
-                return body
-            return None
-        if sc in (401, 403):
-            _session_dead = True
-            print(f"  [Iryo] Bloqueado ({sc}) — Cloudflare WAF tras el browser, "
-                  f"o cfgToken expirado. Skipeando Iryo el resto de la corrida.")
-            return None
-        snippet = str(body)[:200] if body else ""
-        print(f"  [Iryo] Status {sc} intento {intento+1}: {snippet}")
+    result = _post(payload)
+    if result is None:
+        return None
+    sc = result.get("status")
+    body = result.get("body")
+    if sc == 200 and isinstance(body, dict):
+        return body
+    # Cualquier otra cosa (401, 403, -1 con TypeError, etc.): marcamos sesión
+    # muerta y dejamos un único log con detalle.
+    _session_dead = True
+    snippet = str(body)[:300] if body else ""
+    print(f"  [Iryo] Falla (status={sc}): {snippet}. "
+          f"Skipeando Iryo el resto de la corrida.")
     return None
 
 
