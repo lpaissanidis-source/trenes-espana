@@ -1,40 +1,53 @@
-# Pendiente — estado del bot
+# Estado del bot — Trenes España
 
-## Lo que YA está hecho y pusheado en `claude/telegram-bot-timing-SN06g`
+## Operadores activos
 
-1. **Horarios actualizados** (`config.yaml`): ida ≥ 14:30, vuelta ≥ 16:00.
-2. **Ouigo y Renfe alertan por separado** (`main.py`). Antes solo se mandaba el más barato, y Renfe sin filtro de hora le ganaba siempre a Ouigo.
-3. **Iryo agregado como tercer operador** (`buscador_iryo.py`).
-   - Endpoint: `POST https://api.iryo.eu/b2c/availability/search`.
-   - Códigos UIC: Madrid (X0000), Barcelona (71801), Sevilla (51003), Málaga (54413), Córdoba (50500), Alicante (60911), Zaragoza Delicias (04040), Valencia Joaquín Sorolla (60600).
-   - Filtra por hora real, igual que Ouigo. Alerta por umbral o mínimo histórico.
-   - `cfgToken` hardcodeado, capturado 2026-05-27, **expira 2026-05-28 14:13 UTC**.
-   - Variable de entorno `IRYO_CFG_TOKEN` puede sobreescribirlo desde GitHub Secret sin tocar código.
+| Operador | Estado | Lógica de alerta |
+|---|---|---|
+| **Ouigo** | ✅ Activo | Filtra por hora ≥ 14:30 ida, ≥ 16:00 vuelta. Alerta si precio < umbral O mínimo histórico. |
+| **Renfe** | ✅ Activo | Precio mínimo del día sin hora. Alerta si precio < umbral O mínimo histórico. El mensaje aclara "ver renfe.com para horario". |
+| **Iryo** | 🛑 Desactivado | Cloudflare bloquea las IPs de GitHub Actions. Para reactivar (desde VPS o con proxy): setear secret `IRYO_ENABLED=true`. |
 
-## Pendientes
+## Horarios de corrida (cron en GitHub Actions)
 
-### 1) Renovación automática del `cfgToken` de Iryo (Importante)
-El token está firmado con HMAC-SHA256 por Iryo, expira cada ~24h. Cuando expire, Iryo va a empezar a devolver 401/403 y el bot va a loguear:
-```
-[Iryo] 401 — cfgToken probablemente expirado o Cloudflare bloqueó.
-```
+`30 23,2,5,8,11,14,17,20 * * *` (UTC) → en Madrid hora local (CEST):
 
-**Mitigación temporal**: capturar un cfgToken nuevo desde DevTools (Network → request `search` → Payload → copiar valor de `cfgToken`) y o bien:
-- Pegarlo en `buscador_iryo.py:CFG_TOKEN_DEFAULT` y commitear, o
-- Crear/actualizar el GitHub Secret `IRYO_CFG_TOKEN` con el valor nuevo (no requiere commit).
+| UTC | Madrid (CEST) |
+|---|---|
+| 23:30 | **01:30** |
+| 02:30 | **04:30** |
+| 05:30 | **07:30** |
+| 08:30 | **10:30** |
+| 11:30 | **13:30** |
+| 14:30 | **16:30** |
+| 17:30 | **19:30** |
+| 20:30 | **22:30** |
 
-**Solución definitiva**: averiguar qué endpoint de api.iryo.eu emite el cfgToken al cargar iryo.eu (probablemente un GET a `/b2c/config/...` o similar). Capturar ese request en DevTools (filtro de Network por `iryo.eu` viendo TODOS los requests, no solo "search") y reproducirlo desde Python al inicio de cada corrida.
+Cada ~3 horas. Si te molestan los avisos nocturnos (01:30 y 04:30), editá el cron.
 
-### 2) Verificar parser de respuesta Iryo
-La estructura JSON de la respuesta de `/b2c/availability/search` se infirió por patrones típicos (`travels[].services[].fares[].price`). Si la primera corrida en GitHub Actions devuelve `Sin resultados disponibles` para Iryo pese a haber trenes, hay que revisar el JSON real y ajustar `_extraer_trenes` / `_extraer_min_precio` en `buscador_iryo.py`. Sería útil tener una captura de la pestaña **Preview** del request `search` para confirmar el schema.
+## Configuración
 
-### 3) Cloudflare en GitHub Actions
-La web iryo.eu está detrás de Cloudflare. La API `api.iryo.eu` puede heredar esa protección. Si los requests desde GitHub Actions reciben 403 sistemático, opciones:
-- Usar `cloudscraper` o `curl_cffi` (TLS fingerprinting de browser real).
-- Como último recurso, usar Playwright con un Chromium headless.
+- `config.yaml`: rutas + umbrales + horas mínimas + ausencias.
+- Secrets necesarios en GitHub:
+  - `TELEGRAM_BOT_TOKEN`
+  - `TELEGRAM_CHAT_ID`
+- Secrets opcionales:
+  - `IRYO_ENABLED=true` (solo si se mueve a VPS con IP limpia)
+  - `IRYO_COOKIES` (cf_clearance + __cf_bm, solo si IRYO_ENABLED=true)
+  - `IRYO_CFG_TOKEN` (override del token de Iryo, expira cada ~24h)
 
-### 4) Renfe con horarios reales
-La API actual de Renfe (`vhi_priceCalendar`) solo da precio mínimo del día sin hora. Para tener horarios reales habría que migrar a la API DWR de `venta.renfe.com/vol/dwr/.../trainEnlacesManager.getTrainsList.dwr` — requiere manejo de sesión + token DWR + ~3 llamadas previas. Pendiente, no urgente.
+## Histórico
 
-### 5) Otros repos del usuario sin Telegram
-`vuelos-europa`, `vuelos-cerdeña`, `vuelos-buenos-aires`: el MCP de GitHub está restringido a `trenes-espana`, así que hay que abrir sesiones separadas. La causa más probable: GitHub desactiva los workflows cron tras 60 días sin actividad — basta con ir a Actions → Enable workflow en cada repo.
+- `precios.db` se commitea automáticamente tras cada corrida. Sirve para detectar nuevos mínimos históricos.
+
+## Si Iryo se quiere reactivar en el futuro
+
+1. Mover el bot a un VPS chico (~$5/mes Hetzner/DigitalOcean) o pagar proxy (ScrapingBee/Scrapfly).
+2. Setear `IRYO_ENABLED=true` como secret.
+3. Reinstalar Chromium en el workflow (agregar step `python -m playwright install --with-deps chromium` antes del patcheo de ouigo).
+4. Capturar cookies frescas de iryo.eu cuando se necesite renovar (cada ~24h).
+5. El código de `buscador_iryo.py` ya está armado y solo se activa con `IRYO_ENABLED=true`.
+
+## Otros repos del usuario (fuera del scope de esta sesión)
+
+- `vuelos-europa`, `vuelos-cerdeña`, `vuelos-buenos-aires`: revisar uno por uno en sesiones separadas. Causa más probable de mensajes que no llegan: workflows cron desactivados por GitHub tras 60 días de inactividad (Actions → Enable workflow), o tokens de Telegram inválidos.

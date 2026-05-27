@@ -45,6 +45,12 @@ CFG_TOKEN = os.environ.get("IRYO_CFG_TOKEN") or CFG_TOKEN_DEFAULT
 # por el usuario. Formato: "cf_clearance=xxx; __cf_bm=yyy"
 COOKIES_RAW = os.environ.get("IRYO_COOKIES", "")
 
+# Toggle global. Cloudflare bloquea las IPs de GitHub Actions sobre
+# api.iryo.eu incluso con cookies + browser real. Default: desactivado.
+# Para reactivar (ej. corriendo desde VPS con IP limpia) setear env var
+# IRYO_ENABLED=true.
+IRYO_ENABLED = os.environ.get("IRYO_ENABLED", "false").lower() == "true"
+
 ESTACIONES = {
     "Madrid":      "X0000",
     "Barcelona":   "71801",   # Sants
@@ -72,12 +78,16 @@ USER_AGENT = (
 )
 
 
+def habilitado():
+    return IRYO_ENABLED
+
+
 def sesion_activa():
-    return _PW_AVAILABLE and not _session_dead
+    return IRYO_ENABLED and _PW_AVAILABLE and not _session_dead
 
 
 def ruta_disponible(destino):
-    return destino in DESTINOS_IRYO
+    return IRYO_ENABLED and destino in DESTINOS_IRYO
 
 
 def _cleanup():
