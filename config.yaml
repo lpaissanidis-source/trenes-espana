@@ -9,6 +9,11 @@ semanas_adelante: 14
 hora_minima_ida: "15:00"
 hora_minima_vuelta: "17:00"
 
+# Períodos en los que no estás en Madrid (se omiten esas fechas de ida)
+ausencias:
+  - inicio: "2026-08-18"
+    fin: "2026-09-03"
+
 rutas:
   # --- Cubiertas por Ouigo + Renfe ---
 
@@ -41,11 +46,6 @@ rutas:
     origen: "Madrid"
     destino: "Tarragona"
     umbral_precio: 70
-
-  - nombre: "Madrid - Valencia"
-    origen: "Madrid"
-    destino: "Valencia"
-    umbral_precio: 60
 
   - nombre: "Madrid - Zaragoza"
     origen: "Madrid"

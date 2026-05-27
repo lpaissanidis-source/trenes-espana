@@ -1,0 +1,43 @@
+name: Buscar Trenes España
+
+on:
+  schedule:
+    - cron: '30 23,2,5,8,11,14,17,20 * * *'  # c/3h desde 01:30 Madrid (CEST = UTC+2)
+  workflow_dispatch:                            # Permite lanzarlo manualmente desde GitHub
+
+jobs:
+  buscar:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # Necesario para hacer git push del precios.db
+
+    steps:
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Parchear libreria ouigo
+        run: python patch_ouigo.py
+
+      - name: Ejecutar buscador
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PYTHONIOENCODING: utf-8
+        run: python main.py
+
+      - name: Guardar historial de precios
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add precios.db
+          git diff --staged --quiet || git commit -m "Actualizar precios.db [skip ci]"
+          git push

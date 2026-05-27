@@ -21,6 +21,25 @@ def leer_config():
         return yaml.safe_load(f)
 
 
+def filtrar_ausencias(fechas, ausencias):
+    """
+    Elimina los pares (fecha_ida, fecha_vuelta) cuya fecha_ida
+    cae dentro de alguno de los períodos de ausencia definidos en config.yaml.
+    """
+    if not ausencias:
+        return fechas
+
+    periodos = [
+        (datetime.date.fromisoformat(a["inicio"]), datetime.date.fromisoformat(a["fin"]))
+        for a in ausencias
+    ]
+
+    return [
+        (fi, fv) for fi, fv in fechas
+        if not any(ini <= datetime.date.fromisoformat(fi) <= fin for ini, fin in periodos)
+    ]
+
+
 def generar_fechas(semanas_adelante):
     """Pares (viernes, domingo) desde el próximo viernes hasta N semanas."""
     hoy = datetime.date.today()
@@ -172,13 +191,23 @@ if __name__ == "__main__":
 
     rutas            = config.get("rutas", [])
     semanas_adelante = config.get("semanas_adelante", 12)
+    ausencias        = config.get("ausencias", [])
 
     if not rutas:
         print("ERROR: No hay rutas en config.yaml")
         exit(1)
 
     fechas = generar_fechas(semanas_adelante)
-    print(f"Rutas: {len(rutas)} | Fines de semana: {len(fechas)} "
+    fechas = filtrar_ausencias(fechas, ausencias)
+
+    if not fechas:
+        print("ERROR: No quedan fechas disponibles (todas excluidas por ausencias)")
+        exit(1)
+
+    if ausencias:
+        print(f"Períodos excluidos: {[f\"{a['inicio']} → {a['fin']}\" for a in ausencias]}")
+
+    print(f"Rutas: {len(rutas)} | Fines de semana disponibles: {len(fechas)} "
           f"(del {fechas[0][0]} al {fechas[-1][0]})")
 
     for ruta in rutas:

@@ -14,10 +14,19 @@ def leer_credenciales():
     return credenciales
 
 
-_credenciales = leer_credenciales()
+# Primero prueba variables de entorno (GitHub Actions usa secrets como env vars)
+import os
+TOKEN   = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-TOKEN   = _credenciales.get("TELEGRAM_BOT_TOKEN", "")
-CHAT_ID = _credenciales.get("TELEGRAM_CHAT_ID", "")
+# Si no hay variables de entorno, lee el archivo local (ejecucion en PC)
+if not TOKEN or not CHAT_ID:
+    try:
+        _credenciales = leer_credenciales()
+        TOKEN   = _credenciales.get("TELEGRAM_BOT_TOKEN", TOKEN)
+        CHAT_ID = _credenciales.get("TELEGRAM_CHAT_ID", CHAT_ID)
+    except FileNotFoundError:
+        pass
 
 URL_API = f"https://api.telegram.org/bot{TOKEN}"
 
