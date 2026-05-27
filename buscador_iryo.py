@@ -41,6 +41,10 @@ CFG_TOKEN_DEFAULT = (
 )
 CFG_TOKEN = os.environ.get("IRYO_CFG_TOKEN") or CFG_TOKEN_DEFAULT
 
+# Opcional: cookies del browser real (cf_clearance + __cf_bm) capturadas
+# por el usuario. Formato: "cf_clearance=xxx; __cf_bm=yyy"
+COOKIES_RAW = os.environ.get("IRYO_COOKIES", "")
+
 ESTACIONES = {
     "Madrid":      "X0000",
     "Barcelona":   "71801",   # Sants
@@ -88,6 +92,25 @@ def _cleanup():
     _pw = _browser = _context = _page = None
 
 
+def _parse_cookies(raw):
+    """Parse 'k1=v1; k2=v2' a lista de cookies Playwright."""
+    if not raw:
+        return []
+    out = []
+    for piece in raw.split(";"):
+        piece = piece.strip()
+        if "=" in piece:
+            k, v = piece.split("=", 1)
+            out.append({
+                "name":   k.strip(),
+                "value":  v.strip(),
+                "domain": ".iryo.eu",
+                "path":   "/",
+                "secure": True,
+            })
+    return out
+
+
 def _init():
     """Lanza Chromium, abre iryo.eu y deja la sesión lista para llamar al API."""
     global _pw, _browser, _context, _page, _session_inited, _session_dead
@@ -112,22 +135,31 @@ def _init():
             locale="es-ES",
             viewport={"width": 1920, "height": 1080},
         )
+
+        # Si hay cookies del browser real (cf_clearance + __cf_bm) las inyectamos
+        # ANTES de navegar. Eso le hace ver a Cloudflare clearance ya válida y
+        # debería evitar el challenge.
+        cookies = _parse_cookies(COOKIES_RAW)
+        if cookies:
+            _context.add_cookies(cookies)
+            print(f"  [Iryo] {len(cookies)} cookies inyectadas desde IRYO_COOKIES.")
+
         _page = _context.new_page()
-        # networkidle = espera a que la SPA termine de bootstrap y haga sus
-        # propios calls (puede setear cookies de api.iryo.eu).
-        _page.goto(HOME_URL, wait_until="networkidle", timeout=60000)
-        _page.wait_for_timeout(2000)
+        # domcontentloaded para no esperar networkidle (la SPA mantiene
+        # conexiones largas y networkidle puede no llegar nunca → timeout).
+        _page.goto(HOME_URL, wait_until="domcontentloaded", timeout=45000)
+        _page.wait_for_timeout(3000)
         atexit.register(_cleanup)
 
-        # Diagnóstico: probamos un fetch simple a api.iryo.eu para distinguir
-        # entre "Cloudflare bloquea la IP" y "CORS bloquea la request".
+        # Diagnóstico: probamos un fetch a api.iryo.eu para confirmar si la IP
+        # llega o si Cloudflare la bloquea.
         diag = _page.evaluate(
             """async () => {
                 try {
                     const r = await fetch('https://api.iryo.eu/', {
                         method: 'GET', credentials: 'include',
                     });
-                    return { status: r.status, ok: r.ok };
+                    return { status: r.status };
                 } catch (e) {
                     return { error: String(e) };
                 }
