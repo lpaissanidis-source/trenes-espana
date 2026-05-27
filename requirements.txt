@@ -1,3 +1,4 @@
 requests
 pyyaml
 ouigo
+curl_cffi

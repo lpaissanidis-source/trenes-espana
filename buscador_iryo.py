@@ -2,25 +2,35 @@
 Buscador Iryo usando la API api.iryo.eu/b2c/availability/search.
 
 Notas operativas:
+- Usa curl_cffi con impersonate=chrome120 para imitar el fingerprint TLS de
+  un navegador real y esquivar el WAF de Cloudflare que protege api.iryo.eu.
 - El cfgToken está firmado con HMAC-SHA256 por Iryo (no podemos generarlo).
-  Caduca cada ~24h. Si Iryo deja de devolver resultados, hay que capturarlo
-  de nuevo desde iryo.eu (DevTools > Network > request 'search' > Payload >
-  copiar el valor de cfgToken) y actualizar la constante CFG_TOKEN o setear
-  la variable de entorno IRYO_CFG_TOKEN como secret en GitHub Actions.
+  Caduca cada ~24h. Si Iryo deja de devolver resultados:
+    1) Abrí iryo.eu en Chrome, DevTools > Network, hacé una búsqueda.
+    2) En el request 'search' copiá el valor de cfgToken del Payload.
+    3) Pegalo en CFG_TOKEN_DEFAULT abajo o en el GitHub Secret IRYO_CFG_TOKEN.
+- Si Cloudflare sigue bloqueando con 403 pese a curl_cffi, capturar la cookie
+  cf_clearance del browser y setearla como secret IRYO_COOKIES con formato
+  "cf_clearance=xxx; __cf_bm=yyy".
+- Tras el primer 403/401 se asume sesión inválida y se skipean las llamadas
+  restantes (evita ruido en los logs y latencia inútil).
 """
 
 import os
 import uuid
-import requests
 from datetime import datetime, time
 import time as time_module
 
-API_URL = "https://api.iryo.eu/b2c/availability/search"
+try:
+    from curl_cffi import requests as http
+    _IMPERSONATE = "chrome120"
+except ImportError:
+    import requests as http
+    _IMPERSONATE = None
 
+API_URL = "https://api.iryo.eu/b2c/availability/search"
 SUBSCRIPTION_KEY = "7c9b9b1ea0fe4f0c9d1739fcbf8b5438"
 
-# Token capturado de iryo.eu el 2026-05-27 (válido ~24h). Si caduca, capturar
-# uno nuevo. Se puede sobreescribir vía env var IRYO_CFG_TOKEN sin tocar código.
 CFG_TOKEN_DEFAULT = (
     "H4sIAAAAAAAA/52QX0vDMBTFv0ueW0nSZs36NqWgOLHMgcgQSfNn1rUuJh0opd/dG8ukMkTw"
     "7Zybc3/nkh6JZotydHlH2QxFSNYKXEUlaCefQd8X56CNaUOqfCqvwfk3Ce5q9XALpqtb7TvR"
@@ -30,7 +40,8 @@ CFG_TOKEN_DEFAULT = (
     "PNMi5ipjQhGMNSFoGD4BYuPt+SwCAAA="
     ".fRcDmoQXxwqrDt1G0VIgHWKJ5VEGFnVA+MJWYT7HhVE="
 )
-CFG_TOKEN = os.environ.get("IRYO_CFG_TOKEN") or CFG_TOKEN_DEFAULT
+CFG_TOKEN   = os.environ.get("IRYO_CFG_TOKEN")  or CFG_TOKEN_DEFAULT
+COOKIES_RAW = os.environ.get("IRYO_COOKIES", "")
 
 # Códigos UIC que usa Iryo. Madrid X0000 es virtual ("todas las estaciones",
 # agrupa Atocha 60000 + Chamartín 17000).
@@ -44,12 +55,30 @@ ESTACIONES = {
     "Zaragoza":    "04040",   # Delicias
     "Valencia":    "60600",   # Joaquín Sorolla
 }
-
 DESTINOS_IRYO = set(ESTACIONES.keys()) - {"Madrid"}
+
+# Flag de sesión: tras un 401/403 dejamos de llamar a Iryo el resto de la corrida.
+_session_dead = False
+
+
+def sesion_activa():
+    return not _session_dead
 
 
 def ruta_disponible(destino):
     return destino in DESTINOS_IRYO
+
+
+def _parse_cookies(raw):
+    if not raw:
+        return None
+    out = {}
+    for piece in raw.split(";"):
+        piece = piece.strip()
+        if "=" in piece:
+            k, v = piece.split("=", 1)
+            out[k.strip()] = v.strip()
+    return out or None
 
 
 def _headers():
@@ -65,7 +94,7 @@ def _headers():
         "user-agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/148.0.0.0 Safari/537.36"
+            "Chrome/120.0.0.0 Safari/537.36"
         ),
         "x-client-version": "1.104.2",
         "x-pwa-sessid": str(uuid.uuid4()),
@@ -73,7 +102,23 @@ def _headers():
     }
 
 
+def _post(payload):
+    kwargs = {
+        "json":    payload,
+        "headers": _headers(),
+        "timeout": 20,
+        "cookies": _parse_cookies(COOKIES_RAW),
+    }
+    if _IMPERSONATE:
+        kwargs["impersonate"] = _IMPERSONATE
+    return http.post(API_URL, **kwargs)
+
+
 def _llamar_api(orig_code, dest_code, fecha_ida, fecha_vuelta):
+    global _session_dead
+    if _session_dead:
+        return None
+
     payload = {
         "cfgToken": CFG_TOKEN,
         "currency": "EUR",
@@ -87,14 +132,18 @@ def _llamar_api(orig_code, dest_code, fecha_ida, fecha_vuelta):
     }
     for intento in range(3):
         try:
-            resp = requests.post(API_URL, json=payload, headers=_headers(), timeout=20)
-            if resp.status_code == 200:
+            resp = _post(payload)
+            sc = resp.status_code
+            if sc == 200:
                 return resp.json()
-            if resp.status_code in (401, 403):
-                print(f"  [Iryo] {resp.status_code} — cfgToken probablemente expirado "
-                      f"o Cloudflare bloqueó. Capturar nuevo cfgToken desde iryo.eu.")
+            if sc in (401, 403):
+                _session_dead = True
+                print(f"  [Iryo] Bloqueado ({sc}) — Cloudflare WAF o cfgToken "
+                      f"expirado. Skipeando Iryo el resto de la corrida. Si "
+                      f"persiste: capturar cookie cf_clearance del browser y "
+                      f"setear secret IRYO_COOKIES.")
                 return None
-            print(f"  [Iryo] API {resp.status_code} intento {intento+1}: {resp.text[:200]}")
+            print(f"  [Iryo] API {sc} intento {intento+1}: {resp.text[:200]}")
             time_module.sleep(2)
         except Exception as e:
             print(f"  [Iryo] Error red intento {intento+1}: {e}")
@@ -102,8 +151,7 @@ def _llamar_api(orig_code, dest_code, fecha_ida, fecha_vuelta):
     return None
 
 
-def _to_time(s):
-    """Parsea ISO 8601 → datetime con tz si existe."""
+def _to_dt(s):
     if not s:
         return None
     try:
@@ -113,7 +161,6 @@ def _to_time(s):
 
 
 def _extraer_min_precio(svc):
-    """Encuentra el menor precio entre todas las tarifas del servicio."""
     candidatos = []
     for k in ("fares", "tariffs", "offers", "prices", "products", "rates"):
         items = svc.get(k)
@@ -134,7 +181,6 @@ def _extraer_min_precio(svc):
 
 
 def _extraer_trenes(data, direccion, hora_minima):
-    """Devuelve lista de {dt, hhmm, price} para la dirección dada, filtrada por hora."""
     if not data:
         return []
     h_min = time(*map(int, hora_minima.split(":")))
@@ -166,7 +212,7 @@ def _extraer_trenes(data, direccion, hora_minima):
                 svc.get("departure") or
                 ""
             )
-            dt = _to_time(dep) if isinstance(dep, str) else None
+            dt = _to_dt(dep) if isinstance(dep, str) else None
             precio = _extraer_min_precio(svc)
             if not dt or precio is None:
                 continue
@@ -186,6 +232,8 @@ def buscar(origen, destino, fecha_ida, fecha_vuelta,
     Busca ida+vuelta en Iryo respetando filtros de hora.
     Devuelve dict con la misma estructura que buscador_ouigo.buscar, o None.
     """
+    if _session_dead:
+        return None
     if not ruta_disponible(destino):
         return None
     orig_code = ESTACIONES.get(origen)

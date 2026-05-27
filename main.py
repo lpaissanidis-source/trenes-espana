@@ -13,7 +13,7 @@ import time
 from database       import crear_tabla, guardar_precio, obtener_minimo_historico
 from buscador_ouigo import buscar as buscar_ouigo, ruta_disponible as ouigo_disponible
 from buscador_renfe import buscar_todos as buscar_renfe, ruta_disponible as renfe_disponible
-from buscador_iryo  import buscar as buscar_iryo,  ruta_disponible as iryo_disponible
+from buscador_iryo  import buscar as buscar_iryo,  ruta_disponible as iryo_disponible, sesion_activa as iryo_activa
 from telegram_bot   import enviar_alerta_tren
 
 NOMBRE_BUSCADOR = "Trenes España"
@@ -105,9 +105,15 @@ def procesar_ruta(config_ruta, fechas, config_global):
         print(f"  [Renfe] No cubre esta ruta.")
 
     # ── Iryo ────────────────────────────────────────────────
-    if iryo_disponible(destino):
+    if not iryo_disponible(destino):
+        print(f"  [Iryo] No cubre esta ruta.")
+    elif not iryo_activa():
+        pass  # bloqueado en una ruta previa, ya se logueó. Silencio.
+    else:
         print(f"  [Iryo] Buscando {len(fechas)} fines de semana...")
         for fecha_ida, fecha_vuelta in fechas:
+            if not iryo_activa():
+                break
             r = buscar_iryo(
                 origen=origen,
                 destino=destino,
@@ -121,8 +127,6 @@ def procesar_ruta(config_ruta, fechas, config_global):
                 r["fecha_vuelta"] = fecha_vuelta
                 todos_resultados.append(r)
             time.sleep(1.0)  # pausa entre llamadas
-    else:
-        print(f"  [Iryo] No cubre esta ruta.")
 
     if not todos_resultados:
         print(f"  Sin resultados disponibles.")
