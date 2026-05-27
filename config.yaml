@@ -1,57 +1,85 @@
 # ============================================================
 # CONFIG.YAML - Trenes España
-# Rutas de tren desde Madrid, buscando en Ouigo (y Renfe cuando esté disponible).
-# Salida viernes a partir de las 15:00, vuelta domingo a partir de las 17:00.
+# Busca en Ouigo Y Renfe. Manda el más barato por ruta.
+# Salida viernes >= 15:00, vuelta domingo >= 17:00.
+# umbral_precio: EUR por persona (ida + vuelta combinado).
 # ============================================================
 
-semanas_adelante: 14       # cuántas semanas hacia adelante buscar
-hora_minima_ida: "15:00"   # hora mínima salida viernes
-hora_minima_vuelta: "17:00" # hora mínima salida domingo
+semanas_adelante: 14
+hora_minima_ida: "15:00"
+hora_minima_vuelta: "17:00"
 
 rutas:
-  # --- Rutas cubiertas por Ouigo ---
+  # --- Cubiertas por Ouigo + Renfe ---
 
   - nombre: "Madrid - Sevilla"
     origen: "Madrid"
     destino: "Sevilla"
-    umbral_precio: 50        # EUR por persona ida+vuelta
+    umbral_precio: 75
 
   - nombre: "Madrid - Málaga"
     origen: "Madrid"
     destino: "Málaga"
-    umbral_precio: 60
+    umbral_precio: 90
 
   - nombre: "Madrid - Alicante"
     origen: "Madrid"
     destino: "Alicante"
-    umbral_precio: 50
+    umbral_precio: 60
 
   - nombre: "Madrid - Córdoba"
     origen: "Madrid"
     destino: "Córdoba"
-    umbral_precio: 40
+    umbral_precio: 65
 
   - nombre: "Madrid - Barcelona"
     origen: "Madrid"
     destino: "Barcelona"
-    umbral_precio: 60
+    umbral_precio: 75
 
   - nombre: "Madrid - Tarragona"
     origen: "Madrid"
     destino: "Tarragona"
-    umbral_precio: 55
+    umbral_precio: 70
 
   - nombre: "Madrid - Valencia"
     origen: "Madrid"
     destino: "Valencia"
-    umbral_precio: 45
+    umbral_precio: 60
 
   - nombre: "Madrid - Zaragoza"
     origen: "Madrid"
     destino: "Zaragoza"
-    umbral_precio: 35
+    umbral_precio: 50
 
   - nombre: "Madrid - Murcia"
     origen: "Madrid"
     destino: "Murcia"
-    umbral_precio: 50
+    umbral_precio: 65
+
+  # --- Solo Renfe (Ouigo no cubre estas rutas) ---
+
+  - nombre: "Madrid - Toledo"
+    origen: "Madrid"
+    destino: "Toledo"
+    umbral_precio: 25
+
+  - nombre: "Madrid - Granada"
+    origen: "Madrid"
+    destino: "Granada"
+    umbral_precio: 70
+
+  - nombre: "Madrid - Cádiz"
+    origen: "Madrid"
+    destino: "Cádiz"
+    umbral_precio: 80
+
+  - nombre: "Madrid - Almería"
+    origen: "Madrid"
+    destino: "Almería"
+    umbral_precio: 80
+
+  - nombre: "Madrid - Cartagena"
+    origen: "Madrid"
+    destino: "Cartagena"
+    umbral_precio: 60

@@ -55,6 +55,7 @@ def enviar_alerta_tren(ruta, fecha_ida, fecha_vuelta, precio_total,
 
     linea_hora_ida    = f"<b>🕐 Horario ida:</b> {hora_ida}\n"    if hora_ida    else ""
     linea_hora_vuelta = f"<b>🕐 Horario vuelta:</b> {hora_vuelta}\n" if hora_vuelta else ""
+    nota_renfe = "\n<i>* Precio mínimo del día. Ver renfe.com para horario exacto.</i>\n" if operador == "Renfe" and not hora_ida else ""
 
     mensaje = (
         f"<b>📁 {buscador}</b>\n"
@@ -70,6 +71,7 @@ def enviar_alerta_tren(ruta, fecha_ida, fecha_vuelta, precio_total,
         f"<b>Operador:</b> {operador}\n"
         f"{linea_hora_ida}"
         f"{linea_hora_vuelta}"
+        f"{nota_renfe}"
     )
 
     return enviar_mensaje(mensaje)

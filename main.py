@@ -1,46 +1,41 @@
 # ============================================================
 # MAIN.PY - Trenes España
-# Busca los trenes más baratos de Ouigo para fines de semana.
+# Busca en Ouigo Y Renfe, compara, y manda el más barato.
 # Salida viernes >= 15:00, vuelta domingo >= 17:00.
-# Alerta por Telegram si el precio baja del umbral o es nuevo mínimo.
 # ============================================================
 
 import yaml
 import datetime
 import time
 
-from database     import crear_tabla, guardar_precio, obtener_minimo_historico
-from buscador_ouigo import buscar as buscar_ouigo, ruta_disponible
-from telegram_bot import enviar_alerta_tren
+from database       import crear_tabla, guardar_precio, obtener_minimo_historico
+from buscador_ouigo import buscar as buscar_ouigo, ruta_disponible as ouigo_disponible
+from buscador_renfe import buscar_todos as buscar_renfe, ruta_disponible as renfe_disponible
+from telegram_bot   import enviar_alerta_tren
 
 NOMBRE_BUSCADOR = "Trenes España"
 
 
 def leer_config():
     with open("config.yaml", "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
-    return config
+        return yaml.safe_load(f)
 
 
 def generar_fechas(semanas_adelante):
-    """
-    Genera pares (viernes, domingo) desde el próximo viernes
-    hasta semanas_adelante semanas adelante.
-    """
-    hoy   = datetime.date.today()
+    """Pares (viernes, domingo) desde el próximo viernes hasta N semanas."""
+    hoy = datetime.date.today()
     dias_hasta_viernes = (4 - hoy.weekday()) % 7
     if dias_hasta_viernes == 0:
         dias_hasta_viernes = 7
 
     primer_viernes = hoy + datetime.timedelta(days=dias_hasta_viernes)
-
-    pares = []
-    for i in range(semanas_adelante):
-        viernes = primer_viernes + datetime.timedelta(weeks=i)
-        domingo = viernes + datetime.timedelta(days=2)
-        pares.append((str(viernes), str(domingo)))
-
-    return pares
+    return [
+        (
+            str(primer_viernes + datetime.timedelta(weeks=i)),
+            str(primer_viernes + datetime.timedelta(weeks=i, days=2)),
+        )
+        for i in range(semanas_adelante)
+    ]
 
 
 def procesar_ruta(config_ruta, fechas, config_global):
@@ -49,8 +44,8 @@ def procesar_ruta(config_ruta, fechas, config_global):
     destino  = config_ruta["destino"]
     umbral   = config_ruta["umbral_precio"]
 
-    hora_minima_ida    = config_global.get("hora_minima_ida",    "15:00")
-    hora_minima_vuelta = config_global.get("hora_minima_vuelta", "17:00")
+    hora_min_ida    = config_global.get("hora_minima_ida",    "15:00")
+    hora_min_vuelta = config_global.get("hora_minima_vuelta", "17:00")
 
     codigo_ruta = f"{origen}-{destino}"
 
@@ -59,50 +54,51 @@ def procesar_ruta(config_ruta, fechas, config_global):
     print(f"  Umbral: {umbral} EUR/persona")
     print(f"{'='*55}")
 
-    if not ruta_disponible(destino):
-        print(f"  (Ouigo no cubre esta ruta — pendiente Renfe)")
-        return
+    todos_resultados = []
 
-    resultados = []
+    # ── Ouigo ───────────────────────────────────────────────
+    if ouigo_disponible(destino):
+        print(f"  [Ouigo] Buscando {len(fechas)} fines de semana...")
+        for fecha_ida, fecha_vuelta in fechas:
+            r = buscar_ouigo(
+                origen=origen,
+                destino=destino,
+                fecha_ida=fecha_ida,
+                fecha_vuelta=fecha_vuelta,
+                hora_minima_ida=hora_min_ida,
+                hora_minima_vuelta=hora_min_vuelta,
+            )
+            if r:
+                r["fecha_ida"]    = fecha_ida
+                r["fecha_vuelta"] = fecha_vuelta
+                todos_resultados.append(r)
+    else:
+        print(f"  [Ouigo] No cubre esta ruta.")
 
-    for fecha_ida, fecha_vuelta in fechas:
-        resultado = buscar_ouigo(
-            origen=origen,
-            destino=destino,
-            fecha_ida=fecha_ida,
-            fecha_vuelta=fecha_vuelta,
-            hora_minima_ida=hora_minima_ida,
-            hora_minima_vuelta=hora_minima_vuelta,
-        )
+    # ── Renfe ───────────────────────────────────────────────
+    if renfe_disponible(destino):
+        renfe_resultados = buscar_renfe(origen, destino, fechas)
+        todos_resultados.extend(renfe_resultados)
+    else:
+        print(f"  [Renfe] No cubre esta ruta.")
 
-        time.sleep(1.5)
-
-        if resultado is None:
-            continue
-
-        precio = resultado["precio_total"]
-        bajo   = "✓ BAJO UMBRAL" if precio < umbral else ""
-        print(f"  {fecha_ida} → {fecha_vuelta} | {precio:.0f} EUR | "
-              f"{resultado['operador']} {bajo}")
-
-        resultados.append({
-            "fecha_ida":    fecha_ida,
-            "fecha_vuelta": fecha_vuelta,
-            **resultado,
-        })
-
-    if not resultados:
+    if not todos_resultados:
         print(f"  Sin resultados disponibles.")
         return
 
-    print(f"\n  Total combinaciones encontradas: {len(resultados)}")
+    # ── Mostrar todos los resultados ─────────────────────────
+    print(f"\n  Resultados ({len(todos_resultados)} combinaciones):")
+    for r in todos_resultados:
+        bajo = "✓ BAJO UMBRAL" if r["precio_total"] < umbral else ""
+        print(f"    {r['fecha_ida']} → {r['fecha_vuelta']} | "
+              f"{r['precio_total']:.0f} EUR | {r['operador']} {bajo}")
 
-    # Guardar todos y detectar el mejor
-    mejor         = None
-    mejor_precio  = float("inf")
-    mejor_es_min  = False
+    # ── Guardar en DB y detectar el mejor ───────────────────
+    mejor        = None
+    mejor_precio = float("inf")
+    mejor_es_min = False
 
-    for r in resultados:
+    for r in todos_resultados:
         guardar_precio(
             operador     = r["operador"],
             ruta         = codigo_ruta,
@@ -135,7 +131,7 @@ def procesar_ruta(config_ruta, fechas, config_global):
     debe_alertar = (mejor_precio < umbral) or mejor_es_min
 
     if debe_alertar:
-        print(f"\n  *** ALERTA: {mejor_precio:.0f} EUR/persona — {mejor['operador']}")
+        print(f"\n  *** ALERTA: {mejor_precio:.0f} EUR | {mejor['operador']}")
         if mejor_es_min:
             print(f"  *** Nuevo mínimo histórico")
         print(f"  Enviando Telegram...")
@@ -157,7 +153,8 @@ def procesar_ruta(config_ruta, fechas, config_global):
         else:
             print(f"  ✗ Error al enviar Telegram")
     else:
-        print(f"\n  Mejor precio: {mejor_precio:.0f} EUR — sobre el umbral ({umbral} EUR)")
+        print(f"\n  Mejor precio: {mejor_precio:.0f} EUR ({mejor['operador']}) "
+              f"— sobre el umbral ({umbral} EUR)")
 
 
 if __name__ == "__main__":
@@ -173,8 +170,8 @@ if __name__ == "__main__":
         print("ERROR: No se encontró config.yaml")
         exit(1)
 
-    rutas             = config.get("rutas", [])
-    semanas_adelante  = config.get("semanas_adelante", 12)
+    rutas            = config.get("rutas", [])
+    semanas_adelante = config.get("semanas_adelante", 12)
 
     if not rutas:
         print("ERROR: No hay rutas en config.yaml")
@@ -189,7 +186,8 @@ if __name__ == "__main__":
             procesar_ruta(ruta, fechas, config)
         except Exception as e:
             print(f"\n  ERROR en {ruta.get('nombre', '?')}: {e}")
-            print(f"  Continuando con la siguiente ruta...")
+            print(f"  Continuando...")
+        time.sleep(5)  # pausa entre rutas para no saturar Ouigo
 
     hora_fin = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n{'='*55}")
