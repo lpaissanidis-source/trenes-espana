@@ -165,13 +165,10 @@ def procesar_ruta(config_ruta, fechas, config_global):
             mejor_por_operador[r["operador"]] = (r, es_min)
 
     # ── Decidir alerta por operador ──────────────────────────
-    # Ouigo e Iryo: filtran por hora real → alerta por umbral O mínimo histórico.
-    # Renfe: precio mínimo del día sin hora → solo alerta por mínimo histórico.
+    # Todos los operadores alertan por umbral O por mínimo histórico.
+    # Renfe sigue marcando en el mensaje que es precio del día sin hora.
     for operador, (mejor, es_min) in mejor_por_operador.items():
-        if operador in ("Ouigo", "Iryo"):
-            debe_alertar = (mejor["precio_total"] < umbral) or es_min
-        else:  # Renfe (sin garantía de hora)
-            debe_alertar = es_min
+        debe_alertar = (mejor["precio_total"] < umbral) or es_min
 
         if not debe_alertar:
             print(f"\n  {operador}: {mejor['precio_total']:.0f} EUR "
