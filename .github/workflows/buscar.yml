@@ -1,8 +1,6 @@
 name: Buscar Trenes España
 
 on:
-  schedule:
-    - cron: '30 23,2,5,8,11,14,17,20 * * *'  # c/3h desde 01:30 Madrid (CEST = UTC+2)
   workflow_dispatch:                            # Permite lanzarlo manualmente desde GitHub
 
 jobs:
